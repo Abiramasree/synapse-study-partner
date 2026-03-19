@@ -10,68 +10,70 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3001",
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
 
-let waitingUsers = []; // store users waiting for match
+let users = [];
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  socket.on("register", (userData) => {
-    const { name, subject, emotion } = userData;
+  socket.on("register", (user) => {
+    users.push({ ...user, socketId: socket.id });
 
-    // ❌ Prevent self match
-    const match = waitingUsers.find(
-      (user) =>
-        user.subject === subject &&
-        user.socketId !== socket.id
+    const match = users.find(
+      (u) =>
+        u.socketId !== socket.id &&
+        u.subject === user.subject &&
+        (
+          (u.emotion === "Motivated" && user.emotion === "Confused") ||
+          (u.emotion === "Confused" && user.emotion === "Motivated")
+        )
     );
 
     if (match) {
-      // Remove matched user
-      waitingUsers = waitingUsers.filter(
-        (user) => user.socketId !== match.socketId
+      const room = `${socket.id}-${match.socketId}`;
+
+      socket.join(room);
+      io.sockets.sockets.get(match.socketId)?.join(room);
+
+      io.to(room).emit("matched", {
+        room,
+        users: [user, match],
+      });
+
+      users = users.filter(
+        (u) => u.socketId !== socket.id && u.socketId !== match.socketId
       );
 
-      // Join private room
-      const room = match.socketId + socket.id;
-      socket.join(room);
-      io.to(match.socketId).socketsJoin(room);
-
-      // Send match info
-      io.to(room).emit("matched", {
-  room,
-  users: [
-    { name, emotion },
-    { name: match.name, emotion: match.emotion }
-  ]
-});
-
-    } else {
-      waitingUsers.push({
-        socketId: socket.id,
-        name,
-        subject,
-        emotion,
-      });
+      console.log("Users matched in room:", room);
     }
   });
 
   socket.on("sendMessage", ({ room, message, sender }) => {
-    io.to(room).emit("receiveMessage", {
-      message,
-      sender,
-    });
+    io.to(room).emit("receiveMessage", { message, sender });
+  });
+
+  // ✅ Pass room through so the receiver knows which room they're in
+  socket.on("offer", ({ offer, room }) => {
+    console.log("Relaying offer to room:", room);
+    socket.to(room).emit("offer", { offer, room });
+  });
+
+  socket.on("answer", ({ answer, room }) => {
+    console.log("Relaying answer to room:", room);
+    socket.to(room).emit("answer", { answer, room });
+  });
+
+  socket.on("ice-candidate", ({ candidate, room }) => {
+    socket.to(room).emit("ice-candidate", { candidate, room });
   });
 
   socket.on("disconnect", () => {
-    waitingUsers = waitingUsers.filter(
-      (user) => user.socketId !== socket.id
-    );
-    console.log("User disconnected");
+    console.log("User disconnected:", socket.id);
+    users = users.filter((u) => u.socketId !== socket.id);
   });
 });
 
